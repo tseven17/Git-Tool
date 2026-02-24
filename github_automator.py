@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import json
+import stat
 from pathlib import Path
 
 # Automatically install the 'requests' tool if the user doesn't have it
@@ -31,17 +32,21 @@ def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
 
 def run_cmd(cmd, cwd=None, hide_output=False):
-    """Runs an invisible computer command."""
+    """Runs an invisible computer command. Accepts lists for safe variable injection."""
+    use_shell = isinstance(cmd, str)
     result = subprocess.run(
         cmd, 
         cwd=cwd, 
-        shell=True, 
+        shell=use_shell, 
         text=True, 
         capture_output=True
     )
+    # Combine standard output and standard error
+    output = (result.stdout + "\n" + result.stderr).strip()
     if result.returncode != 0 and not hide_output:
-        print(f"{Colors.FAIL}Oops, something went wrong running a background task: {cmd}\n{result.stderr}{Colors.ENDC}")
-    return result.returncode == 0, result.stdout.strip()
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        print(f"{Colors.FAIL}Oops, something went wrong running a background task: {cmd_str}\n{output}{Colors.ENDC}")
+    return result.returncode == 0, output
 
 def check_git_installed():
     """Makes sure the user actually has Git installed on their computer."""
@@ -63,8 +68,9 @@ def ensure_git_configured():
         user_email = input(f"Please enter your email address: {Colors.GREEN}").strip()
         print(Colors.ENDC, end="")
         
-        run_cmd(f'git config --global user.name "{user_name}"')
-        run_cmd(f'git config --global user.email "{user_email}"')
+        # Use lists for commands that include user input to prevent command injection
+        run_cmd(["git", "config", "--global", "user.name", user_name])
+        run_cmd(["git", "config", "--global", "user.email", user_email])
         print(f"{Colors.GREEN}✔ Identity saved!{Colors.ENDC}")
 
 def get_github_auth():
@@ -76,13 +82,20 @@ def get_github_auth():
         try:
             with open(TOKEN_FILE, 'r') as f:
                 token = json.load(f).get("token")
-        except:
+        except Exception:
             pass
+
+    # Standardize Modern GitHub API Headers
+    def get_headers(pat):
+        return {
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
 
     if token:
         # Check if the saved token still works
-        headers = {"Authorization": f"token {token}"}
-        res = requests.get("https://api.github.com/user", headers=headers)
+        res = requests.get("https://api.github.com/user", headers=get_headers(token))
         if res.status_code == 200:
             user = res.json().get('login')
             print(f"{Colors.GREEN}✔ Logged into GitHub securely as: {Colors.BOLD}{user}{Colors.ENDC}")
@@ -101,14 +114,31 @@ def get_github_auth():
         token = input(f"{Colors.BOLD}Paste your digital key (PAT) here and press Enter: {Colors.ENDC}").strip()
         print(f"{Colors.CYAN}Checking key...{Colors.ENDC}")
         
-        headers = {"Authorization": f"token {token}"}
-        res = requests.get("https://api.github.com/user", headers=headers)
+        res = requests.get("https://api.github.com/user", headers=get_headers(token))
         
         if res.status_code == 200:
             user = res.json().get('login')
             print(f"{Colors.GREEN}✔ Success! Welcome {user}. Saving your key securely so you don't have to do this again.{Colors.ENDC}")
+            
+            # Remove hidden attribute on Windows before overwriting to prevent PermissionError
+            if TOKEN_FILE.exists():
+                try:
+                    if os.name == 'nt':
+                        subprocess.run(["attrib", "-H", str(TOKEN_FILE)], capture_output=True)
+                    TOKEN_FILE.chmod(stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+
             with open(TOKEN_FILE, 'w') as f:
                 json.dump({"token": token}, f)
+            # Restrict file permissions to owner only
+            try:
+                if os.name == 'nt':
+                    subprocess.run(["attrib", "+H", str(TOKEN_FILE)], capture_output=True)
+                else:
+                    TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except Exception:
+                pass
             return token, user
         else:
             print(f"{Colors.FAIL}✖ That key didn't work. Please make sure you copied the whole thing and try again.{Colors.ENDC}")
@@ -118,8 +148,9 @@ def create_remote_repo(token, repo_name, private=True):
     print(f"{Colors.CYAN}Creating your new cloud project (repository) '{repo_name}' on GitHub...{Colors.ENDC}")
     url = "https://api.github.com/user/repos"
     headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
     }
     data = {
         "name": repo_name,
@@ -156,9 +187,9 @@ def handle_new_project(token, target_dir):
     commit_msg = input(f"Type a short note (commit message, e.g. 'First upload of my website'): {Colors.GREEN}") or "First upload"
     print(Colors.ENDC, end="")
     
-    run_cmd(f'git commit -m "{commit_msg}"', cwd=target_dir)
+    run_cmd(["git", "commit", "-m", commit_msg], cwd=target_dir)
     run_cmd("git branch -M main", cwd=target_dir)
-    run_cmd(f"git remote add origin {repo_url}", cwd=target_dir)
+    run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir)
     
     print(f"{Colors.CYAN}Uploading files to GitHub (git push). This might take a second depending on how big the folder is...{Colors.ENDC}")
     success, _ = run_cmd("git push -u origin main", cwd=target_dir)
@@ -178,8 +209,9 @@ def handle_existing_project(token, target_dir):
     print(f"\n1. {Colors.GREEN}Standard Update (Commit & Push):{Colors.ENDC} Upload my newest changes to GitHub.")
     print(f"2. {Colors.BLUE}Duplicate/Copy (Change Remote):{Colors.ENDC} Create a brand new separate copy of this project on GitHub.")
     print(f"3. {Colors.WARNING}Safe Playground (Git Worktree):{Colors.ENDC} Create a 'Git Worktree' (A safe, parallel folder for experimenting).")
+    print(f"4. {Colors.CYAN}Skip (Do Nothing):{Colors.ENDC} Leave the repository exactly as it is.")
     
-    choice = input(f"\nSelect an option (1-3): {Colors.GREEN}")
+    choice = input(f"\nSelect an option (1-4): {Colors.GREEN}")
     print(Colors.ENDC, end="")
     
     if choice == '1':
@@ -187,11 +219,22 @@ def handle_existing_project(token, target_dir):
         run_cmd("git add .", cwd=target_dir)
         commit_msg = input(f"What did you change? (commit message, e.g. 'Fixed the spelling error on homepage'): {Colors.GREEN}")
         print(Colors.ENDC, end="")
-        run_cmd(f'git commit -m "{commit_msg}"', cwd=target_dir)
-        print(f"{Colors.CYAN}Uploading (git push)...{Colors.ENDC}")
-        run_cmd(f"git push origin {current_branch}", cwd=target_dir)
-        print(f"{Colors.GREEN}🎉 Awesome! Your changes are saved on the cloud.{Colors.ENDC}")
         
+        # We catch the commit command to see if Git rejected it because there were no file changes made
+        success, output = run_cmd(["git", "commit", "-m", commit_msg], cwd=target_dir, hide_output=True)
+        
+        if success:
+            print(f"{Colors.CYAN}Uploading (git push)...{Colors.ENDC}")
+            run_cmd(["git", "push", "origin", current_branch], cwd=target_dir)
+            print(f"{Colors.GREEN}🎉 Awesome! Your changes are saved on the cloud.{Colors.ENDC}")
+        elif "nothing to commit" in output.lower():
+            print(f"{Colors.CYAN}No new changes detected. Everything is already up to date!{Colors.ENDC}")
+            print(f"{Colors.CYAN}Ensuring cloud is synced (git push)...{Colors.ENDC}")
+            run_cmd(["git", "push", "origin", current_branch], cwd=target_dir)
+            print(f"{Colors.GREEN}🎉 Awesome! Your files are safely synced.{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}Oops, something went wrong committing: {output}{Colors.ENDC}")
+            
     elif choice == '2':
         print("\nWe are going to take your files and upload them as a brand new project (changing git remote).")
         repo_name = input(f"What do you want to call the NEW project (repository)? (No spaces): {Colors.GREEN}").strip().replace(" ", "-")
@@ -200,10 +243,10 @@ def handle_existing_project(token, target_dir):
         
         repo_url = create_remote_repo(token, repo_name, is_private)
         
-        run_cmd("git remote remove origin", cwd=target_dir) # Disconnect from old
-        run_cmd(f"git remote add origin {repo_url}", cwd=target_dir) # Connect to new
+        run_cmd("git remote remove origin", cwd=target_dir, hide_output=True) # Disconnect from old
+        run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir) # Connect to new
         run_cmd("git add .", cwd=target_dir)
-        run_cmd('git commit -m "Copied to a new project"', cwd=target_dir)
+        run_cmd(["git", "commit", "-m", "Copied to a new project"], cwd=target_dir)
         run_cmd("git branch -M main", cwd=target_dir)
         
         print(f"{Colors.CYAN}Uploading to the new cloud project (git push to new remote)...{Colors.ENDC}")
@@ -222,7 +265,7 @@ def handle_existing_project(token, target_dir):
         wt_path = parent_dir / wt_dir_name
         
         print(f"{Colors.CYAN}Creating your safe playground folder (git worktree) at: {wt_path}...{Colors.ENDC}")
-        success, err = run_cmd(f"git worktree add -b {new_branch} {wt_path} main", cwd=target_dir)
+        success, err = run_cmd(["git", "worktree", "add", "-b", new_branch, str(wt_path), "main"], cwd=target_dir)
         
         if success:
             print(f"\n{Colors.GREEN}✔ Playground (worktree) created successfully!{Colors.ENDC}")
@@ -230,6 +273,10 @@ def handle_existing_project(token, target_dir):
             print(f"You can open {Colors.BLUE}{wt_path}{Colors.ENDC} and break things inside it without ever hurting your original project.")
         else:
             print(f"{Colors.FAIL}Oops, couldn't create the playground. Make sure you don't have unsaved changes (uncommitted files) in your main folder first.{Colors.ENDC}")
+            
+    elif choice == '4':
+        print(f"{Colors.CYAN}Skipping GitHub update. Your repository remains unchanged.{Colors.ENDC}")
+        return
 
 def explain_worktrees():
     """A user-friendly primer on what Git Worktrees are and why they are useful."""
