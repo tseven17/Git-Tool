@@ -3,6 +3,7 @@ import sys
 import subprocess
 import json
 import stat
+import glob
 from pathlib import Path
 
 # Automatically install the 'requests' tool if the user doesn't have it
@@ -179,10 +180,15 @@ def handle_new_project(token, target_dir):
     
     repo_url = create_remote_repo(token, repo_name, is_private)
     
-    print(f"{Colors.CYAN}Preparing your files for their first journey to the cloud (git init & git add)...{Colors.ENDC}")
+    print(f"{Colors.CYAN}Preparing your files for their first journey to the cloud (git init)...{Colors.ENDC}")
     run_cmd("git init", cwd=target_dir) # Turns the folder into a Git folder
+
+    # Configure .gitignore BEFORE the first git add so secrets are excluded immediately
+    configure_gitignore(target_dir)
+
+    print(f"\n{Colors.CYAN}Adding your files to the staging area (git add)...{Colors.ENDC}")
     run_cmd("git add .", cwd=target_dir) # Selects all files
-    
+
     print("\nEvery time you save files to GitHub, you attach a little 'Save Note' (commit message) so you remember what you changed.")
     commit_msg = input(f"Type a short note (commit message, e.g. 'First upload of my website'): {Colors.GREEN}") or "First upload"
     print(Colors.ENDC, end="")
@@ -203,26 +209,35 @@ def handle_existing_project(token, target_dir):
     """Handles a folder that is already connected to GitHub."""
     print_header("📁 EXISTING PROJECT FOUND")
     print("This folder is already connected to GitHub (tracked by git). What would you like to do?")
-    
+
     _, current_branch = run_cmd("git branch --show-current", cwd=target_dir)
-    
+    current_branch = current_branch.strip()
+
     print(f"\n1. {Colors.GREEN}Standard Update (Commit & Push):{Colors.ENDC} Upload my newest changes to GitHub.")
-    print(f"2. {Colors.BLUE}Duplicate/Copy (Change Remote):{Colors.ENDC} Create a brand new separate copy of this project on GitHub.")
-    print(f"3. {Colors.WARNING}Safe Playground (Git Worktree):{Colors.ENDC} Create a 'Git Worktree' (A safe, parallel folder for experimenting).")
-    print(f"4. {Colors.CYAN}Skip (Do Nothing):{Colors.ENDC} Leave the repository exactly as it is.")
-    
-    choice = input(f"\nSelect an option (1-4): {Colors.GREEN}")
+    print(f"2. {Colors.CYAN}Download Updates (Pull):{Colors.ENDC} Fetch and apply the latest changes from GitHub to this computer.")
+    print(f"3. {Colors.BLUE}Duplicate/Copy (Change Remote):{Colors.ENDC} Create a brand new separate copy of this project on GitHub.")
+    print(f"4. {Colors.WARNING}Safe Playground (Git Worktree):{Colors.ENDC} Create a 'Git Worktree' (A safe, parallel folder for experimenting).")
+    print(f"5. {Colors.HEADER}Pull Request (Propose Changes):{Colors.ENDC} Create a new branch and open a Pull Request for review.")
+    print(f"6. {Colors.CYAN}Manage .gitignore:{Colors.ENDC} Review and update what files are ignored / kept off GitHub.")
+    print(f"7. {Colors.FAIL}Purge File from History:{Colors.ENDC} Permanently erase a sensitive file from ALL past commits.")
+    print(f"8. {Colors.CYAN}Skip (Do Nothing):{Colors.ENDC} Leave the repository exactly as it is.")
+
+    choice = input(f"\nSelect an option (1-8): {Colors.GREEN}")
     print(Colors.ENDC, end="")
     
     if choice == '1':
         print("\nYou are about to upload your newest changes (git add & commit).")
+        # Offer to update .gitignore before staging files
+        update_gi = input(f"Would you like to review your .gitignore before uploading? (y/N): ").strip().lower()
+        if update_gi == 'y':
+            configure_gitignore(target_dir)
         run_cmd("git add .", cwd=target_dir)
         commit_msg = input(f"What did you change? (commit message, e.g. 'Fixed the spelling error on homepage'): {Colors.GREEN}")
         print(Colors.ENDC, end="")
-        
+
         # We catch the commit command to see if Git rejected it because there were no file changes made
         success, output = run_cmd(["git", "commit", "-m", commit_msg], cwd=target_dir, hide_output=True)
-        
+
         if success:
             print(f"{Colors.CYAN}Uploading (git push)...{Colors.ENDC}")
             run_cmd(["git", "push", "origin", current_branch], cwd=target_dir)
@@ -234,49 +249,476 @@ def handle_existing_project(token, target_dir):
             print(f"{Colors.GREEN}🎉 Awesome! Your files are safely synced.{Colors.ENDC}")
         else:
             print(f"{Colors.FAIL}Oops, something went wrong committing: {output}{Colors.ENDC}")
-            
+
     elif choice == '2':
+        print(f"\n{Colors.CYAN}Checking for the latest updates from GitHub (git pull)...{Colors.ENDC}")
+        
+        success, output = run_cmd(["git", "pull", "origin", current_branch], cwd=target_dir, hide_output=True)
+        
+        if success:
+            if "Already up to date" in output:
+                print(f"{Colors.GREEN}✔ Everything is already up to date! You have the newest files.{Colors.ENDC}")
+            else:
+                print(f"{Colors.GREEN}🎉 Success! Downloaded the latest changes from GitHub.{Colors.ENDC}")
+                print(f"{Colors.CYAN}Here is a summary of what changed:{Colors.ENDC}\n{output}")
+        else:
+            print(f"{Colors.FAIL}Oops, something went wrong while pulling.{Colors.ENDC}")
+            if "conflict" in output.lower() or "local changes" in output.lower():
+                print(f"{Colors.WARNING}It looks like you have local changes that conflict with the cloud version.{Colors.ENDC}")
+                print("Try committing your changes first (Option 1) and then pull again to merge them.")
+            print(f"\n{Colors.CYAN}Technical details:{Colors.ENDC}\n{output}")
+
+    elif choice == '3':
         print("\nWe are going to take your files and upload them as a brand new project (changing git remote).")
         repo_name = input(f"What do you want to call the NEW project (repository)? (No spaces): {Colors.GREEN}").strip().replace(" ", "-")
         print(Colors.ENDC, end="")
         is_private = input("Should this new project (repository) be Private? (Y/n): ").strip().lower() != 'n'
-        
+
         repo_url = create_remote_repo(token, repo_name, is_private)
-        
+
         run_cmd("git remote remove origin", cwd=target_dir, hide_output=True) # Disconnect from old
         run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir) # Connect to new
         run_cmd("git add .", cwd=target_dir)
         run_cmd(["git", "commit", "-m", "Copied to a new project"], cwd=target_dir)
         run_cmd("git branch -M main", cwd=target_dir)
-        
+
         print(f"{Colors.CYAN}Uploading to the new cloud project (git push to new remote)...{Colors.ENDC}")
         run_cmd("git push -u origin main", cwd=target_dir)
         print(f"{Colors.GREEN}🎉 Success! You now have a fresh copy online.{Colors.ENDC}")
-        
-    elif choice == '3':
+
+    elif choice == '4':
         explain_worktrees()
         print("Let's name this new parallel universe folder (git branch).")
         new_branch = input(f"Enter a short name for the experiment (e.g. 'new-button-test'): {Colors.GREEN}").strip().replace(" ", "-")
         print(Colors.ENDC, end="")
-        
+
         # Create worktree one directory level up so it sits nicely next to the original folder
         parent_dir = Path(target_dir).parent
         wt_dir_name = f"{Path(target_dir).name}-{new_branch}"
         wt_path = parent_dir / wt_dir_name
-        
+
         print(f"{Colors.CYAN}Creating your safe playground folder (git worktree) at: {wt_path}...{Colors.ENDC}")
         success, err = run_cmd(["git", "worktree", "add", "-b", new_branch, str(wt_path), "main"], cwd=target_dir)
-        
+
         if success:
             print(f"\n{Colors.GREEN}✔ Playground (worktree) created successfully!{Colors.ENDC}")
             print(f"{Colors.BOLD}If you open your file explorer, you will see a brand new folder right next to your old one.{Colors.ENDC}")
             print(f"You can open {Colors.BLUE}{wt_path}{Colors.ENDC} and break things inside it without ever hurting your original project.")
         else:
             print(f"{Colors.FAIL}Oops, couldn't create the playground. Make sure you don't have unsaved changes (uncommitted files) in your main folder first.{Colors.ENDC}")
-            
-    elif choice == '4':
+
+    elif choice == '5':
+        create_pull_request(token, target_dir)
+
+    elif choice == '6':
+        configure_gitignore(target_dir)
+        print(f"\n{Colors.CYAN}Tip: Run Option 1 (Standard Update) next to commit the updated .gitignore to GitHub.{Colors.ENDC}")
+
+    elif choice == '7':
+        purge_file_from_history(target_dir)
+
+    elif choice == '8':
         print(f"{Colors.CYAN}Skipping GitHub update. Your repository remains unchanged.{Colors.ENDC}")
         return
+
+def configure_gitignore(target_dir):
+    """
+    Scans the project for potentially sensitive or unwanted files, shows the
+    user what was found, and updates (or creates) .gitignore accordingly.
+    """
+    print_header("🔒 .GITIGNORE SETUP — PROTECT SENSITIVE FILES")
+    print(
+        "Before uploading your files to GitHub, it is important to make sure\n"
+        "you are NOT accidentally sharing secret or private information.\n"
+        "\nThink of .gitignore as a 'do NOT upload' list. Any file or folder\n"
+        "listed there will be completely ignored by GitHub, no matter what.\n"
+    )
+
+    # Patterns that are commonly sensitive or unnecessary to commit
+    SENSITIVE_CHECKS = [
+        # (glob_pattern, human_readable_label, reason_to_ignore)
+        (".env",             ".env files (API keys, passwords)",
+         "These files often contain secret keys or database passwords that should NEVER be public."),
+        (".env.*",           ".env.* variants (.env.local, .env.production, etc.)",
+         "Variant .env files used for different environments — still contain secrets."),
+        ("*.pem",            "PEM / SSL certificate private keys (*.pem)",
+         "Private certificate files. Exposing these lets attackers impersonate your server."),
+        ("*.key",            "Private key files (*.key)",
+         "Generic private key files. Same risk as PEM files."),
+        ("*.p12",            "PKCS#12 certificate bundles (*.p12)",
+         "Certificate + private key bundles used for authentication."),
+        ("*.pfx",            "PFX certificate bundles (*.pfx)",
+         "Windows equivalent of .p12 — same risk."),
+        ("__pycache__/",     "Python cache folders (__pycache__/)",
+         "Compiled Python bytecode. Not useful to other people and clutters the repository."),
+        ("*.pyc",            "Compiled Python files (*.pyc)",
+         "Python bytecode — auto-generated, not needed in version control."),
+        ("venv/",            "Python virtual environment folder (venv/)",
+         "This folder can be hundreds of MB and is rebuilt from requirements.txt anyway."),
+        (".venv/",           "Python virtual environment folder (.venv/)",
+         "Same as venv/ — very large and automatically recreatable."),
+        ("node_modules/",    "Node.js packages folder (node_modules/)",
+         "Can be thousands of files. Rebuilt with 'npm install' — never needs to be on GitHub."),
+        ("*.log",            "Log files (*.log)",
+         "Log files grow large and often contain internal paths or error details."),
+        ("*.zip",            "ZIP archives (*.zip)",
+         "Large binary files that bloat your repository history."),
+        ("*.sqlite",         "SQLite database files (*.sqlite)",
+         "May contain real user data — databases should not be committed to GitHub."),
+        ("*.db",             "Database files (*.db)",
+         "Same as .sqlite — may contain sensitive data."),
+        ("Thumbs.db",        "Windows thumbnail cache (Thumbs.db)",
+         "A Windows internal file — not useful on GitHub."),
+        (".DS_Store",        "macOS metadata files (.DS_Store)",
+         "macOS folder metadata — not relevant to your project."),
+        (".vs/",             "Visual Studio settings folder (.vs/)",
+         "Local editor settings — not useful to share with others."),
+        (".idea/",           "JetBrains IDE settings (.idea/)",
+         "Local editor settings for PyCharm, WebStorm, etc."),
+        ("dist/",            "Build output folder (dist/)",
+         "Auto-generated files from your build process. Rebuilt any time with your build command."),
+        ("build/",           "Build output folder (build/)",
+         "Same as dist/ — auto-generated, not needed in source control."),
+    ]
+
+    # Read existing .gitignore to avoid duplicating entries
+    gitignore_path = os.path.join(target_dir, ".gitignore")
+    existing_lines = set()
+    if os.path.exists(gitignore_path):
+        try:
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                existing_lines = {l.strip() for l in f if l.strip() and not l.startswith("#")}
+        except Exception:
+            pass
+
+    # Scan which patterns actually exist in this project
+    found_patterns = []
+    for pattern, label, reason in SENSITIVE_CHECKS:
+        search = pattern.rstrip("/")
+        check_path = os.path.join(target_dir, search.replace("*", ""))
+        # Simple presence check (exact filename or directory)
+        exact_match = os.path.exists(os.path.join(target_dir, search))
+        wildcard_match = False
+        if "*" in pattern:
+            wildcard_match = bool(glob.glob(os.path.join(target_dir, "**", search), recursive=True))
+        if (exact_match or wildcard_match) and pattern not in existing_lines:
+            found_patterns.append((pattern, label, reason))
+
+    # Always suggest the most important ones even if not present
+    always_suggest = {
+        ".env", ".env.*", "*.pem", "*.key", "node_modules/", "venv/", ".venv/"
+    }
+    for pattern, label, reason in SENSITIVE_CHECKS:
+        if pattern in always_suggest and pattern not in existing_lines:
+            if not any(p == pattern for p, _, _ in found_patterns):
+                found_patterns.append((pattern, label, reason))
+
+    if not found_patterns:
+        print(f"{Colors.GREEN}✔ Your .gitignore looks good — no obvious sensitive files detected.{Colors.ENDC}")
+        return
+
+    print(f"{Colors.WARNING}The following file types were found or are commonly present in projects like yours.{Colors.ENDC}")
+    print(f"You will be asked about each one. It is strongly recommended to ignore most of them.\n")
+
+    to_add = []
+    for i, (pattern, label, reason) in enumerate(found_patterns, 1):
+        print(f"\n  {Colors.BOLD}[{i}/{len(found_patterns)}] {label}{Colors.ENDC}")
+        print(f"      {Colors.CYAN}Why ignore it?{Colors.ENDC} {reason}")
+        answer = input(f"      Add '{pattern}' to .gitignore? (Y/n): ").strip().lower()
+        if answer != "n":
+            to_add.append(pattern)
+            print(f"      {Colors.GREEN}✔ Will be ignored.{Colors.ENDC}")
+        else:
+            print(f"      {Colors.WARNING}Skipped — this file type WILL be uploaded to GitHub.{Colors.ENDC}")
+
+    if not to_add:
+        print(f"\n{Colors.CYAN}No changes made to .gitignore.{Colors.ENDC}")
+        return
+
+    # Write the new entries to .gitignore
+    try:
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            f.write("\n# --- Added by GitHub Auto-Pilot ---\n")
+            for p in to_add:
+                f.write(p + "\n")
+        print(f"\n{Colors.GREEN}✔ .gitignore updated successfully with {len(to_add)} new rule(s).{Colors.ENDC}")
+        print(f"   File saved at: {gitignore_path}")
+    except Exception as e:
+        print(f"{Colors.FAIL}Could not write .gitignore: {e}{Colors.ENDC}")
+
+
+def purge_file_from_history(target_dir):
+    """
+    Permanently removes a file from ALL git history (rewrites commits).
+    Critical for cases where a sensitive file was accidentally committed.
+
+    IMPORTANT: This rewrites history. Anyone who has already cloned the repo
+    will need to re-clone it or run 'git fetch --all && git reset --hard origin/main'.
+    """
+    print_header("🗑️  PURGE FILE FROM GIT HISTORY")
+    print(
+        f"{Colors.WARNING}⚠  IMPORTANT — PLEASE READ CAREFULLY:{Colors.ENDC}\n"
+        "\nWhen you commit a file to git, it is saved FOREVER in git's history,\n"
+        "even after you delete it. This means:\n"
+        "  • Anyone who clones your repository can see the file's old content.\n"
+        "  • GitHub's own servers store the history indefinitely.\n"
+        "\nThis tool will REWRITE your entire git history to completely erase\n"
+        "the file from every past commit. After this:\n"
+        "  • The file will no longer exist in any commit, past or present.\n"
+        "  • Anyone else who has cloned the repo must re-clone it.\n"
+        "  • You must force-push to GitHub (this tool will do that for you).\n"
+        f"\n{Colors.FAIL}If the file contained API keys or passwords, you MUST also rotate\n"
+        f"(change/regenerate) those credentials immediately — GitHub's servers\n"
+        f"may have already indexed the content.{Colors.ENDC}\n"
+    )
+
+    file_to_purge = input(
+        f"Enter the path of the file to purge (relative to project root, e.g. .env): {Colors.GREEN}"
+    ).strip()
+    print(Colors.ENDC, end="")
+
+    if not file_to_purge:
+        print(f"{Colors.FAIL}No file specified. Aborting.{Colors.ENDC}")
+        return
+
+    confirm = input(
+        f"\n{Colors.WARNING}Are you SURE you want to permanently erase '{file_to_purge}' from ALL history?\n"
+        f"This cannot be undone (type YES to confirm): {Colors.ENDC}"
+    ).strip()
+    if confirm != "YES":
+        print(f"{Colors.CYAN}Aborted — no changes made.{Colors.ENDC}")
+        return
+
+    # Method 1: git filter-repo (modern, fast, recommended)
+    ok_filter_repo, _ = run_cmd("git filter-repo --version", cwd=target_dir, hide_output=True)
+    # Method 2: git filter-branch (older, always available)
+    ok_filter_branch, _ = run_cmd("git filter-branch --help", cwd=target_dir, hide_output=True)
+
+    purge_ok = False
+
+    if ok_filter_repo:
+        print(f"{Colors.CYAN}Using git filter-repo to purge '{file_to_purge}' from history...{Colors.ENDC}")
+        purge_ok, out = run_cmd(
+            ["git", "filter-repo", "--path", file_to_purge, "--invert-paths", "--force"],
+            cwd=target_dir
+        )
+    else:
+        print(f"{Colors.CYAN}Using git filter-branch to purge '{file_to_purge}' from history...{Colors.ENDC}")
+        print(f"{Colors.WARNING}(This may take a while on large repositories){Colors.ENDC}")
+        # Use a shell string here since filter-branch requires the shell for --index-filter
+        safe_file = file_to_purge.replace("'", "\\'")
+        purge_ok, out = run_cmd(
+            f"git filter-branch --force --index-filter "
+            f"\"git rm --cached --ignore-unmatch '{safe_file}'\" "
+            f"--prune-empty --tag-name-filter cat -- --all",
+            cwd=target_dir
+        )
+
+    if not purge_ok:
+        print(f"{Colors.FAIL}✖ History rewrite failed. See above for details.{Colors.ENDC}")
+        print(
+            f"{Colors.WARNING}Tip: If git filter-repo is not installed, run:\n"
+            f"  pip install git-filter-repo{Colors.ENDC}"
+        )
+        return
+
+    # Add the file to .gitignore to prevent it from being committed again
+    gitignore_path = os.path.join(target_dir, ".gitignore")
+    existing = ""
+    if os.path.exists(gitignore_path):
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+
+    if file_to_purge not in existing:
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            f.write(f"\n# Purged from history — never commit again\n{file_to_purge}\n")
+        print(f"{Colors.GREEN}✔ Added '{file_to_purge}' to .gitignore so it can never be committed again.{Colors.ENDC}")
+        run_cmd("git add .gitignore", cwd=target_dir)
+        run_cmd(["git", "commit", "-m", f"chore: add {file_to_purge} to gitignore after history purge"], cwd=target_dir)
+
+    # Force push to GitHub to overwrite remote history
+    print(f"\n{Colors.WARNING}Force-pushing rewritten history to GitHub...{Colors.ENDC}")
+    _, current_branch = run_cmd("git branch --show-current", cwd=target_dir)
+    push_ok, _ = run_cmd(["git", "push", "origin", current_branch, "--force"], cwd=target_dir)
+
+    if push_ok:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}✔ File successfully purged from all history!{Colors.ENDC}")
+        print(
+            f"\n{Colors.CYAN}Next steps you MUST take:{Colors.ENDC}\n"
+            f"  1. {Colors.WARNING}Rotate any secrets that were in the file{Colors.ENDC} — change passwords,\n"
+            f"     regenerate API keys, revoke tokens. Assume they are compromised.\n"
+            f"  2. If other people have cloned this repo, ask them to re-clone it\n"
+            f"     (or run: git fetch --all && git reset --hard origin/{current_branch}).\n"
+            f"  3. Contact GitHub Support (support.github.com) to clear their caches\n"
+            f"     if the repository was ever public.\n"
+        )
+    else:
+        print(f"{Colors.FAIL}✖ Force push failed. You may need to manually run:{Colors.ENDC}")
+        print(f"  git push origin {current_branch} --force")
+
+
+def explain_pull_requests():
+    """A friendly explanation of what Pull Requests are and why they are used."""
+    print(f"\n{Colors.HEADER}--- What is a 'Pull Request' (PR)? ---{Colors.ENDC}")
+    print(
+        "Imagine you and a friend are both working on the same website.\n"
+        "If you both edited the same file at the same time, things could get messy!\n"
+        "\nA Pull Request solves this by working in stages:\n"
+        "  1. You make your changes on your OWN separate copy (called a 'branch').\n"
+        "  2. When you are happy with your changes, you open a Pull Request.\n"
+        "     This is like saying: 'Hey team, I made some changes. Can you look\n"
+        "     them over before we add them to the main website?'\n"
+        "  3. Your team (or just you) reviews the changes, leaves comments, and\n"
+        "     approves them.\n"
+        "  4. Once approved, the changes are 'merged' (combined) into the main branch.\n"
+        "\nEven if you work alone, Pull Requests are great because:\n"
+        "  • They give you a clean history of what changed and WHY.\n"
+        "  • Cloudflare Pages will automatically build a PREVIEW of your PR branch,\n"
+        "    so you can see the live result before publishing to the main site.\n"
+        "  • You can link issues and keep everything organised.\n"
+    )
+
+
+def create_pull_request(token, target_dir):
+    """
+    Creates a new branch from the current state, pushes it, and opens a
+    Pull Request against the main/master branch on GitHub.
+    """
+    _, current_branch = run_cmd("git branch --show-current", cwd=target_dir)
+
+    # Get remote URL to extract owner/repo
+    success, remote_url = run_cmd(["git", "remote", "get-url", "origin"], cwd=target_dir)
+    if not success or not remote_url:
+        print(f"{Colors.FAIL}✖ This repository does not have a GitHub remote configured.{Colors.ENDC}")
+        print("  Please run Option 1 (Standard Update) first to push your code to GitHub.")
+        return
+
+    # Parse owner and repo from HTTPS or SSH URL
+    owner, repo = None, None
+    if "github.com" in remote_url:
+        if remote_url.startswith("http"):
+            parts = remote_url.rstrip("/").rstrip(".git").split("/")
+            owner, repo = parts[-2], parts[-1]
+        elif remote_url.startswith("git@"):
+            path_part = remote_url.split(":")[-1].rstrip(".git")
+            parts = path_part.split("/")
+            owner, repo = parts[0], parts[1]
+
+    if not owner or not repo:
+        print(f"{Colors.FAIL}✖ Could not determine GitHub owner/repo from remote URL: {remote_url}{Colors.ENDC}")
+        return
+
+    explain_pull_requests()
+
+    print(f"\n{Colors.BOLD}Let's create a Pull Request for '{owner}/{repo}'.{Colors.ENDC}")
+    print(f"You are currently on branch: {Colors.CYAN}{current_branch}{Colors.ENDC}\n")
+
+    # Step 1: Create (or reuse) a feature branch
+    new_branch = input(
+        f"Enter a name for your new feature branch (e.g. 'add-contact-page'): {Colors.GREEN}"
+    ).strip().replace(" ", "-")
+    print(Colors.ENDC, end="")
+
+    if not new_branch:
+        print(f"{Colors.FAIL}Branch name cannot be empty.{Colors.ENDC}")
+        return
+
+    # Check if branch already exists locally
+    _, branches_out = run_cmd("git branch", cwd=target_dir, hide_output=True)
+    branch_exists = new_branch in (b.strip().lstrip("* ") for b in branches_out.splitlines())
+
+    if branch_exists:
+        print(f"{Colors.CYAN}Branch '{new_branch}' already exists. Switching to it...{Colors.ENDC}")
+        run_cmd(["git", "checkout", new_branch], cwd=target_dir)
+    else:
+        print(f"{Colors.CYAN}Creating new branch '{new_branch}' from '{current_branch}'...{Colors.ENDC}")
+        success, err = run_cmd(["git", "checkout", "-b", new_branch], cwd=target_dir)
+        if not success:
+            print(f"{Colors.FAIL}✖ Could not create branch '{new_branch}'.{Colors.ENDC}")
+            return
+
+    # Step 2: Stage and commit any pending changes
+    _, status_out = run_cmd("git status --porcelain", cwd=target_dir, hide_output=True)
+    if status_out.strip():
+        print(f"\n{Colors.CYAN}You have uncommitted changes. Committing them to '{new_branch}'...{Colors.ENDC}")
+        run_cmd("git add .", cwd=target_dir)
+        commit_msg = input(
+            f"Commit message for this branch (e.g. 'Add contact page'): {Colors.GREEN}"
+        ) or f"Changes for PR: {new_branch}"
+        print(Colors.ENDC, end="")
+        run_cmd(["git", "commit", "-m", commit_msg], cwd=target_dir)
+    else:
+        print(f"{Colors.CYAN}No uncommitted changes detected on this branch.{Colors.ENDC}")
+
+    # Step 3: Push the branch to GitHub
+    print(f"{Colors.CYAN}Pushing branch '{new_branch}' to GitHub...{Colors.ENDC}")
+    push_ok, _ = run_cmd(["git", "push", "-u", "origin", new_branch], cwd=target_dir)
+    if not push_ok:
+        print(f"{Colors.FAIL}✖ Push failed. Check your internet connection and GitHub permissions.{Colors.ENDC}")
+        return
+
+    # Step 4: Determine base branch (main or master)
+    base_branch = current_branch if current_branch in ("main", "master") else "main"
+    base_override = input(
+        f"Which branch should the PR merge INTO? [{base_branch}]: {Colors.GREEN}"
+    ).strip()
+    print(Colors.ENDC, end="")
+    if base_override:
+        base_branch = base_override
+
+    # Step 5: Create the PR via GitHub API
+    pr_title = input(
+        f"PR title (short summary, e.g. 'Add contact page'): {Colors.GREEN}"
+    ).strip() or f"Changes from {new_branch}"
+    print(Colors.ENDC, end="")
+
+    pr_body = input(
+        f"PR description (optional — what does this change do?): {Colors.GREEN}"
+    ).strip()
+    print(Colors.ENDC, end="")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    data = {
+        "title": pr_title,
+        "head":  new_branch,
+        "base":  base_branch,
+        "body":  pr_body or f"Pull request created via GitHub Auto-Pilot from branch `{new_branch}`.",
+    }
+    res = requests.post(
+        f"https://api.github.com/repos/{owner}/{repo}/pulls",
+        headers=headers,
+        json=data
+    )
+
+    if res.status_code == 201:
+        pr_url = res.json().get("html_url", "")
+        print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 Pull Request created successfully!{Colors.ENDC}")
+        print(f"   View it here: {Colors.CYAN}{pr_url}{Colors.ENDC}")
+        print(
+            f"\n{Colors.CYAN}What happens next?{Colors.ENDC}\n"
+            "  • If you use Cloudflare Pages, a preview deployment of your branch\n"
+            "    will start automatically — check your Cloudflare dashboard.\n"
+            "  • When you are happy with the changes, click 'Merge Pull Request'\n"
+            "    on GitHub to publish them to your main branch.\n"
+        )
+    elif res.status_code == 422:
+        err_msg = res.json().get("message", "Unknown error")
+        errors  = res.json().get("errors", [])
+        if errors:
+            err_msg += " — " + "; ".join(str(e) for e in errors)
+        print(f"{Colors.FAIL}✖ GitHub rejected the Pull Request: {err_msg}{Colors.ENDC}")
+        if "no commits between" in err_msg.lower():
+            print(
+                f"{Colors.WARNING}  This means the branch '{new_branch}' has no new commits\n"
+                f"  compared to '{base_branch}'. Make some changes and commit them first.{Colors.ENDC}"
+            )
+    else:
+        print(f"{Colors.FAIL}✖ Failed to create PR (HTTP {res.status_code}): {res.text}{Colors.ENDC}")
+
 
 def explain_worktrees():
     """A user-friendly primer on what Git Worktrees are and why they are useful."""
