@@ -513,7 +513,8 @@ def handle_new_project(token, target_dir):
     
     run_cmd(["git", "commit", "-m", commit_msg], cwd=target_dir)
     run_cmd("git branch -M main", cwd=target_dir)
-    run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir)
+    token_url = _embed_token_in_url(repo_url, token)
+    run_cmd(["git", "remote", "add", "origin", token_url], cwd=target_dir)
     
     print(f"{Colors.CYAN}Uploading files to GitHub (git push). This might take a second depending on how big the folder is...{Colors.ENDC}")
     success, _ = run_cmd("git push -u origin main", cwd=target_dir)
@@ -597,7 +598,8 @@ def handle_existing_project(token, target_dir):
         repo_url = create_remote_repo(token, repo_name, is_private)
 
         run_cmd("git remote remove origin", cwd=target_dir, hide_output=True) # Disconnect from old
-        run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir) # Connect to new
+        token_url = _embed_token_in_url(repo_url, token)
+        run_cmd(["git", "remote", "add", "origin", token_url], cwd=target_dir) # Connect to new
         safe_git_add(target_dir)
         run_cmd(["git", "commit", "-m", "Copied to a new project"], cwd=target_dir)
         run_cmd("git branch -M main", cwd=target_dir)
