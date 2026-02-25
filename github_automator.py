@@ -117,6 +117,56 @@ def save_config(config):
         pass
 
 
+def add_profile(config):
+    """
+    Interactively prompts for a new GitHub PAT, verifies it, and saves the profile.
+    Uses the GitHub login as the profile key automatically.
+    Returns the updated config and the new login name.
+    """
+    def get_headers(pat):
+        return {
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+
+    print_header("🔑 ADD GITHUB PROFILE")
+    print("To add a GitHub profile, we need a Personal Access Token (PAT) from that account.")
+    print(f"Generate one at: {Colors.CYAN}https://github.com/settings/tokens/new?scopes=repo{Colors.ENDC}")
+    print()
+
+    while True:
+        token = input(f"{Colors.BOLD}Paste your PAT here and press Enter: {Colors.ENDC}").strip()
+        print(f"{Colors.CYAN}Verifying token...{Colors.ENDC}")
+
+        try:
+            res = requests.get("https://api.github.com/user", headers=get_headers(token))
+        except Exception as e:
+            print(f"{Colors.FAIL}Network error: {e}{Colors.ENDC}")
+            continue
+
+        if res.status_code == 200:
+            info  = res.json()
+            login = info.get("login", "")
+            name  = info.get("name") or login
+            email = info.get("email") or ""
+
+            if not email:
+                email = input(f"GitHub didn't share your email. Enter it manually (for git commits): {Colors.GREEN}").strip()
+                print(Colors.ENDC, end="")
+
+            config.setdefault("profiles", {})[login] = {
+                "token": token, "login": login, "name": name, "email": email
+            }
+            if not config.get("default_profile"):
+                config["default_profile"] = login
+
+            save_config(config)
+            print(f"{Colors.GREEN}✔ Profile '{login}' saved.{Colors.ENDC}")
+            return config, login
+        else:
+            print(f"{Colors.FAIL}✖ That token didn't work. Please check it and try again.{Colors.ENDC}")
+
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
 
