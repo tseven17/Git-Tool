@@ -30,6 +30,90 @@ class Colors:
 CONFIG_DIR = Path.home() / ".config" / "coi_automator"
 TOKEN_FILE = CONFIG_DIR / "github_token.json"
 
+
+def load_config():
+    """
+    Loads the multi-profile config. Automatically migrates the old single-token
+    format {"token": "..."} to the new {"default_profile": ..., "profiles": {...}} format.
+    Returns a dict. If the file doesn't exist or is unreadable, returns an empty config.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    empty = {"default_profile": None, "profiles": {}}
+
+    if not TOKEN_FILE.exists():
+        return empty
+
+    try:
+        if os.name == 'nt':
+            subprocess.run(["attrib", "-H", str(TOKEN_FILE)], capture_output=True)
+        with open(TOKEN_FILE, 'r') as f:
+            data = json.load(f)
+    except Exception:
+        return empty
+
+    # Migrate old single-token format
+    if "token" in data and "profiles" not in data:
+        old_token = data["token"]
+        # Fetch username from GitHub to use as profile key
+        try:
+            res = requests.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {old_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28"
+                }
+            )
+            if res.status_code == 200:
+                info = res.json()
+                login = info.get("login", "default")
+                name  = info.get("name") or login
+                email = info.get("email") or ""
+                migrated = {
+                    "default_profile": login,
+                    "profiles": {
+                        login: {"token": old_token, "login": login, "name": name, "email": email}
+                    }
+                }
+                save_config(migrated)
+                return migrated
+        except Exception:
+            pass
+        # Fallback: store with key "default"
+        migrated = {
+            "default_profile": "default",
+            "profiles": {
+                "default": {"token": old_token, "login": "default", "name": "", "email": ""}
+            }
+        }
+        save_config(migrated)
+        return migrated
+
+    return data
+
+
+def save_config(config):
+    """Writes the config dict to TOKEN_FILE, hiding it on Windows."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Remove hidden attribute before overwriting (Windows)
+    if TOKEN_FILE.exists():
+        try:
+            if os.name == 'nt':
+                subprocess.run(["attrib", "-H", str(TOKEN_FILE)], capture_output=True)
+            TOKEN_FILE.chmod(stat.S_IWRITE | stat.S_IREAD)
+        except Exception:
+            pass
+    with open(TOKEN_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+    try:
+        if os.name == 'nt':
+            subprocess.run(["attrib", "+H", str(TOKEN_FILE)], capture_output=True)
+        else:
+            TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+
+
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
 
