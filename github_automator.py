@@ -167,6 +167,64 @@ def add_profile(config):
         else:
             print(f"{Colors.FAIL}✖ That token didn't work. Please check it and try again.{Colors.ENDC}")
 
+
+def select_profile():
+    """
+    Shows a profile selection menu. On first run (no profiles) goes straight to add_profile.
+    Returns (token, login, name, email) for the selected profile.
+    """
+    config = load_config()
+    profiles = config.get("profiles", {})
+
+    # First time — no profiles at all
+    if not profiles:
+        print_header("🔑 GITHUB LOGIN — FIRST TIME SETUP")
+        print("We need a GitHub Personal Access Token to get started.")
+        config, login = add_profile(config)
+        profiles = config["profiles"]
+        profile = profiles[login]
+        return profile["token"], profile["login"], profile["name"], profile["email"]
+
+    default = config.get("default_profile") or list(profiles.keys())[0]
+    logins  = list(profiles.keys())
+
+    print_header("SELECT GITHUB PROFILE")
+    for i, key in enumerate(logins, 1):
+        marker = " ← default" if key == default else ""
+        print(f"  {i}. {key}{Colors.CYAN}{marker}{Colors.ENDC}")
+    print(f"  {len(logins) + 1}. Add a new profile")
+
+    default_idx = logins.index(default) + 1 if default in logins else 1
+    raw = input(f"\nEnter choice [{default_idx}]: {Colors.GREEN}").strip()
+    print(Colors.ENDC, end="")
+
+    if raw == "":
+        choice = default_idx
+    else:
+        try:
+            choice = int(raw)
+        except ValueError:
+            choice = default_idx
+
+    # Add new profile
+    if choice == len(logins) + 1:
+        config, login = add_profile(config)
+        profiles = config["profiles"]
+        config["default_profile"] = login
+        save_config(config)
+        profile = profiles[login]
+        return profile["token"], profile["login"], profile["name"], profile["email"]
+
+    # Select existing profile (clamp to valid range)
+    choice = max(1, min(choice, len(logins)))
+    selected_login = logins[choice - 1]
+    config["default_profile"] = selected_login
+    save_config(config)
+
+    profile = profiles[selected_login]
+    print(f"{Colors.GREEN}✔ Using profile: {Colors.BOLD}{selected_login}{Colors.ENDC}")
+    return profile["token"], profile["login"], profile["name"], profile["email"]
+
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
 
