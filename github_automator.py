@@ -226,6 +226,98 @@ def select_profile():
     print(f"{Colors.GREEN}✔ Using profile: {Colors.BOLD}{selected_login}{Colors.ENDC}")
     return profile.get("token", ""), profile.get("login", selected_login), profile.get("name", selected_login), profile.get("email", "")
 
+def select_target_directory():
+    """
+    Asks the user whether to use the current working directory or specify a different path.
+    Returns the validated absolute path as a string.
+    """
+    current = os.getcwd()
+    print(f"\n{Colors.BOLD}Target folder:{Colors.ENDC} {Colors.CYAN}{current}{Colors.ENDC}")
+    ans = input("Use this folder? (Y/n): ").strip().lower()
+    if ans != 'n':
+        return current
+
+    while True:
+        path = input(f"Enter the full folder path: {Colors.GREEN}").strip().strip('"').strip("'")
+        print(Colors.ENDC, end="")
+        if os.path.isdir(path):
+            return path
+        print(f"{Colors.FAIL}✖ That folder doesn't exist. Please try again.{Colors.ENDC}")
+
+
+def _make_hyperlink(url, label):
+    """Returns an OSC 8 terminal hyperlink. Falls back to plain text on unsupported terminals."""
+    return chr(27) + f"]8;;{url}" + chr(27) + chr(92) + label + chr(27) + "]8;;" + chr(27) + chr(92)
+
+
+def _embed_token_in_url(remote_url, token):
+    """
+    Returns a remote URL with the PAT embedded for credential-free push/pull.
+    e.g. https://github.com/owner/repo.git  ->  https://ghp_xxx@github.com/owner/repo.git
+    """
+    if remote_url.startswith("https://"):
+        without_scheme = remote_url[len("https://"):]
+        if "@" in without_scheme:
+            without_scheme = without_scheme.split("@", 1)[1]
+        return f"https://{token}@{without_scheme}"
+    return remote_url
+
+
+def _parse_github_owner_repo(remote_url):
+    """
+    Parses owner and repo name from an HTTPS or SSH GitHub remote URL.
+    Returns (owner, repo) or (None, None) if not a GitHub URL.
+    """
+    if "github.com" not in remote_url:
+        return None, None
+    try:
+        if remote_url.startswith("http"):
+            without_scheme = remote_url[remote_url.index("github.com"):]
+            parts = without_scheme.rstrip("/").rstrip(".git").split("/")
+            return parts[1], parts[2]
+        elif remote_url.startswith("git@"):
+            path_part = remote_url.split(":")[-1].rstrip(".git")
+            parts = path_part.split("/")
+            return parts[0], parts[1]
+    except (IndexError, ValueError):
+        pass
+    return None, None
+
+
+def display_repo_info(target_dir, token, login, name, email):
+    """
+    If target_dir is a git repo with a GitHub remote:
+    - Shows the repo name as a clickable terminal hyperlink
+    - Updates the remote URL to embed the PAT (bypasses Windows Credential Manager)
+    - Sets local git user.name and user.email to match the selected profile
+    """
+    is_repo, _ = run_cmd("git rev-parse --is-inside-work-tree", cwd=target_dir, hide_output=True)
+    if not is_repo:
+        return
+
+    ok, remote_url = run_cmd(["git", "remote", "get-url", "origin"], cwd=target_dir, hide_output=True)
+    if not ok or not remote_url.strip():
+        return
+
+    remote_url = remote_url.strip()
+    owner, repo = _parse_github_owner_repo(remote_url)
+
+    if owner and repo:
+        gh_url = f"https://github.com/{owner}/{repo}"
+        link   = _make_hyperlink(gh_url, f"{owner}/{repo}")
+        print(f"\n{Colors.CYAN}Detected repo:{Colors.ENDC} {Colors.BOLD}{link}{Colors.ENDC}")
+        print(f"  {Colors.CYAN}{gh_url}{Colors.ENDC}")
+
+        token_url = _embed_token_in_url(remote_url, token)
+        run_cmd(["git", "remote", "set-url", "origin", token_url], cwd=target_dir, hide_output=True)
+
+    if name:
+        run_cmd(["git", "config", "--local", "user.name",  name],  cwd=target_dir, hide_output=True)
+    if email:
+        run_cmd(["git", "config", "--local", "user.email", email], cwd=target_dir, hide_output=True)
+    if name or email:
+        print(f"{Colors.GREEN}✔ Git identity set to: {name} <{email}>{Colors.ENDC}")
+
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
 
