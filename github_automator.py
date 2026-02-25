@@ -178,8 +178,7 @@ def select_profile():
 
     # First time — no profiles at all
     if not profiles:
-        print_header("🔑 GITHUB LOGIN — FIRST TIME SETUP")
-        print("We need a GitHub Personal Access Token to get started.")
+        print("\nWelcome! Let's connect your GitHub account to get started.")
         config, login = add_profile(config)
         profiles = config["profiles"]
         profile = profiles[login]
@@ -1020,16 +1019,7 @@ def create_pull_request(token, target_dir):
         return
 
     # Parse owner and repo from HTTPS or SSH URL
-    owner, repo = None, None
-    if "github.com" in remote_url:
-        if remote_url.startswith("http"):
-            remote_url_stripped = remote_url.removesuffix(".git").rstrip("/")
-            parts = remote_url_stripped.split("/")
-            owner, repo = parts[-2], parts[-1]
-        elif remote_url.startswith("git@"):
-            path_part = remote_url.split(":")[-1].removesuffix(".git")
-            parts = path_part.split("/")
-            owner, repo = parts[0], parts[1]
+    owner, repo = _parse_github_owner_repo(remote_url)
 
     if not owner or not repo:
         print(f"{Colors.FAIL}✖ Could not determine GitHub owner/repo from remote URL: {remote_url}{Colors.ENDC}")
