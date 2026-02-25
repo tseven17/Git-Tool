@@ -183,9 +183,10 @@ def select_profile():
         config, login = add_profile(config)
         profiles = config["profiles"]
         profile = profiles[login]
-        return profile["token"], profile["login"], profile["name"], profile["email"]
+        return profile.get("token", ""), profile.get("login", login), profile.get("name", login), profile.get("email", "")
 
-    default = config.get("default_profile") or list(profiles.keys())[0]
+    stored_default = config.get("default_profile")
+    default = stored_default if stored_default in profiles else list(profiles.keys())[0]
     logins  = list(profiles.keys())
 
     print_header("SELECT GITHUB PROFILE")
@@ -213,7 +214,7 @@ def select_profile():
         config["default_profile"] = login
         save_config(config)
         profile = profiles[login]
-        return profile["token"], profile["login"], profile["name"], profile["email"]
+        return profile.get("token", ""), profile.get("login", login), profile.get("name", login), profile.get("email", "")
 
     # Select existing profile (clamp to valid range)
     choice = max(1, min(choice, len(logins)))
@@ -223,7 +224,7 @@ def select_profile():
 
     profile = profiles[selected_login]
     print(f"{Colors.GREEN}✔ Using profile: {Colors.BOLD}{selected_login}{Colors.ENDC}")
-    return profile["token"], profile["login"], profile["name"], profile["email"]
+    return profile.get("token", ""), profile.get("login", selected_login), profile.get("name", selected_login), profile.get("email", "")
 
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
