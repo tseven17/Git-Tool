@@ -460,76 +460,6 @@ def ensure_git_configured():
         run_cmd(["git", "config", "--global", "user.email", user_email])
         print(f"{Colors.GREEN}✔ Identity saved!{Colors.ENDC}")
 
-def get_github_auth():
-    """Logs the user into GitHub securely."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    
-    token = None
-    if TOKEN_FILE.exists():
-        try:
-            with open(TOKEN_FILE, 'r') as f:
-                token = json.load(f).get("token")
-        except Exception:
-            pass
-
-    # Standardize Modern GitHub API Headers
-    def get_headers(pat):
-        return {
-            "Authorization": f"Bearer {pat}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-
-    if token:
-        # Check if the saved token still works
-        res = requests.get("https://api.github.com/user", headers=get_headers(token))
-        if res.status_code == 200:
-            user = res.json().get('login')
-            print(f"{Colors.GREEN}✔ Logged into GitHub securely as: {Colors.BOLD}{user}{Colors.ENDC}")
-            return token, user
-
-    print_header("🔑 GITHUB LOGIN")
-    print("To save your files to the internet, we need a digital key (Personal Access Token / PAT) from your GitHub account.")
-    print("You only have to do this once!\n")
-    print(f"1. Hold CTRL (or CMD on Mac) and click this link: {Colors.CYAN}https://github.com/settings/tokens/new?scopes=repo{Colors.ENDC}")
-    print("2. Log into GitHub if it asks you to.")
-    print("3. In the 'Note' box, type something like 'My Setup Tool'.")
-    print("4. Scroll all the way to the very bottom and click the green 'Generate token' button.")
-    print("5. Copy the long string of letters and numbers it gives you.\n")
-    
-    while True:
-        token = input(f"{Colors.BOLD}Paste your digital key (PAT) here and press Enter: {Colors.ENDC}").strip()
-        print(f"{Colors.CYAN}Checking key...{Colors.ENDC}")
-        
-        res = requests.get("https://api.github.com/user", headers=get_headers(token))
-        
-        if res.status_code == 200:
-            user = res.json().get('login')
-            print(f"{Colors.GREEN}✔ Success! Welcome {user}. Saving your key securely so you don't have to do this again.{Colors.ENDC}")
-            
-            # Remove hidden attribute on Windows before overwriting to prevent PermissionError
-            if TOKEN_FILE.exists():
-                try:
-                    if os.name == 'nt':
-                        subprocess.run(["attrib", "-H", str(TOKEN_FILE)], capture_output=True)
-                    TOKEN_FILE.chmod(stat.S_IWRITE | stat.S_IREAD)
-                except Exception:
-                    pass
-
-            with open(TOKEN_FILE, 'w') as f:
-                json.dump({"token": token}, f)
-            # Restrict file permissions to owner only
-            try:
-                if os.name == 'nt':
-                    subprocess.run(["attrib", "+H", str(TOKEN_FILE)], capture_output=True)
-                else:
-                    TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
-            except Exception:
-                pass
-            return token, user
-        else:
-            print(f"{Colors.FAIL}✖ That key didn't work. Please make sure you copied the whole thing and try again.{Colors.ENDC}")
-
 def create_remote_repo(token, repo_name, private=True):
     """Creates the cloud folder on GitHub."""
     print(f"{Colors.CYAN}Creating your new cloud project (repository) '{repo_name}' on GitHub...{Colors.ENDC}")
@@ -1233,28 +1163,23 @@ def main():
 
     check_git_installed()
     ensure_git_configured()
-    token, user = get_github_auth()
-    
-    # Foolproof Directory Selection
-    current_folder = os.getcwd()
-    print(f"\nYou are currently inside this folder on your computer:")
-    print(f"{Colors.CYAN}{current_folder}{Colors.ENDC}\n")
-    
-    is_correct = input("Is this the folder you want to save to GitHub (initialize repository)? (Y/n): ").strip().lower()
-    
-    if is_correct == 'n':
-        print(f"\n{Colors.WARNING}Ah, okay! Here is how to fix that:{Colors.ENDC}")
-        print("1. Move this python script file into the folder you actually want to save (commit).")
-        print("2. Run the script again from inside that folder.")
-        sys.exit(0)
-    
-    # Check if the folder already has a hidden ".git" tracking folder inside it
-    is_git_repo, _ = run_cmd("git rev-parse --is-inside-work-tree", cwd=current_folder, hide_output=True)
-    
+
+    # Step 1: Choose GitHub profile
+    token, login, name, email = select_profile()
+
+    # Step 2: Choose target directory
+    target_dir = select_target_directory()
+
+    # Step 3: Show repo info, patch remote URL with token, set local git identity
+    display_repo_info(target_dir, token, login, name, email)
+
+    # Step 4: Route to new-project or existing-project workflow
+    is_git_repo, _ = run_cmd("git rev-parse --is-inside-work-tree", cwd=target_dir, hide_output=True)
+
     if is_git_repo:
-        handle_existing_project(token, current_folder)
+        handle_existing_project(token, target_dir)
     else:
-        handle_new_project(token, current_folder)
+        handle_new_project(token, target_dir)
 
 if __name__ == "__main__":
     try:
