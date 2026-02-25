@@ -4,6 +4,7 @@ import subprocess
 import json
 import stat
 import glob
+import shutil
 from pathlib import Path
 
 # Automatically install the 'requests' tool if the user doesn't have it
@@ -48,6 +49,97 @@ def run_cmd(cmd, cwd=None, hide_output=False):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         print(f"{Colors.FAIL}Oops, something went wrong running a background task: {cmd_str}\n{output}{Colors.ENDC}")
     return result.returncode == 0, output
+
+# Windows device names that git cannot index as regular files
+WINDOWS_RESERVED_NAMES = {
+    "nul", "con", "prn", "aux",
+    "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
+
+def find_reserved_filenames(target_dir):
+    """Finds files or directories with Windows-reserved names that git cannot index."""
+    found = []
+    for root, dirs, files in os.walk(target_dir):
+        dirs[:] = [d for d in dirs if d != '.git']
+        for name in files + dirs:
+            if name.lower() in WINDOWS_RESERVED_NAMES:
+                found.append(os.path.relpath(os.path.join(root, name), target_dir))
+    return found
+
+def safe_git_add(target_dir):
+    """
+    Runs 'git add .' and gracefully handles Windows-reserved filename errors
+    (e.g. a file literally named 'nul', 'con', 'aux', etc.).
+    Returns True if staging succeeded.
+    """
+    success, output = run_cmd("git add .", cwd=target_dir, hide_output=True)
+    if success:
+        return True
+
+    # Detect reserved-filename errors from git's output
+    if "unable to index file" in output or "failed to insert into database" in output:
+        reserved = find_reserved_filenames(target_dir)
+        if reserved:
+            print(f"\n{Colors.FAIL}✖ Git could not stage your files because the following item(s) have")
+            print(f"   names that are reserved by Windows and cannot be tracked by Git:{Colors.ENDC}")
+            for f in reserved:
+                print(f"   {Colors.WARNING}• {f}{Colors.ENDC}")
+            print(
+                f"\n{Colors.CYAN}Names like 'nul', 'con', 'aux', 'com1', etc. are special Windows device\n"
+                f"names. Git is unable to add them to its database.{Colors.ENDC}"
+            )
+            print(
+                f"\nHow would you like to fix this?\n"
+                f"  1. Add them to .gitignore {Colors.GREEN}(recommended — they will simply be skipped){Colors.ENDC}\n"
+                f"  2. Delete them permanently\n"
+                f"  3. Abort — leave everything as it is"
+            )
+            fix_choice = input(f"Choose (1/2/3): {Colors.GREEN}").strip()
+            print(Colors.ENDC, end="")
+
+            if fix_choice == '1':
+                gitignore_path = os.path.join(target_dir, ".gitignore")
+                try:
+                    with open(gitignore_path, "a", encoding="utf-8") as gi:
+                        gi.write("\n# Windows reserved device names — cannot be tracked by Git\n")
+                        for rf in reserved:
+                            gi.write(rf.replace("\\", "/") + "\n")
+                    print(f"{Colors.GREEN}✔ Added to .gitignore. Re-staging files...{Colors.ENDC}")
+                except Exception as e:
+                    print(f"{Colors.FAIL}Could not update .gitignore: {e}{Colors.ENDC}")
+                    return False
+                success2, output2 = run_cmd("git add .", cwd=target_dir, hide_output=True)
+                if success2:
+                    return True
+                print(f"{Colors.FAIL}Staging still failed:\n{output2}{Colors.ENDC}")
+                return False
+
+            elif fix_choice == '2':
+                for rf in reserved:
+                    full_path = os.path.join(target_dir, rf)
+                    try:
+                        if os.path.isdir(full_path):
+                            shutil.rmtree(full_path)
+                        else:
+                            os.remove(full_path)
+                        print(f"{Colors.GREEN}✔ Deleted: {rf}{Colors.ENDC}")
+                    except Exception as e:
+                        print(f"{Colors.FAIL}Could not delete {rf}: {e}{Colors.ENDC}")
+                print(f"{Colors.CYAN}Re-staging files...{Colors.ENDC}")
+                success2, output2 = run_cmd("git add .", cwd=target_dir, hide_output=True)
+                if success2:
+                    return True
+                print(f"{Colors.FAIL}Staging still failed:\n{output2}{Colors.ENDC}")
+                return False
+
+            else:
+                print(f"{Colors.WARNING}Aborted — no changes made.{Colors.ENDC}")
+                return False
+
+    # Generic failure — surface the error
+    print(f"{Colors.FAIL}Oops, something went wrong running: git add .\n{output}{Colors.ENDC}")
+    return False
 
 def check_git_installed():
     """Makes sure the user actually has Git installed on their computer."""
@@ -187,7 +279,9 @@ def handle_new_project(token, target_dir):
     configure_gitignore(target_dir)
 
     print(f"\n{Colors.CYAN}Adding your files to the staging area (git add)...{Colors.ENDC}")
-    run_cmd("git add .", cwd=target_dir) # Selects all files
+    if not safe_git_add(target_dir):
+        print(f"{Colors.FAIL}Staging failed — aborting upload.{Colors.ENDC}")
+        return
 
     print("\nEvery time you save files to GitHub, you attach a little 'Save Note' (commit message) so you remember what you changed.")
     commit_msg = input(f"Type a short note (commit message, e.g. 'First upload of my website'): {Colors.GREEN}") or "First upload"
@@ -231,7 +325,9 @@ def handle_existing_project(token, target_dir):
         update_gi = input(f"Would you like to review your .gitignore before uploading? (y/N): ").strip().lower()
         if update_gi == 'y':
             configure_gitignore(target_dir)
-        run_cmd("git add .", cwd=target_dir)
+        if not safe_git_add(target_dir):
+            print(f"{Colors.FAIL}Staging failed — upload cancelled.{Colors.ENDC}")
+            return
         commit_msg = input(f"What did you change? (commit message, e.g. 'Fixed the spelling error on homepage'): {Colors.GREEN}")
         print(Colors.ENDC, end="")
 
@@ -278,7 +374,7 @@ def handle_existing_project(token, target_dir):
 
         run_cmd("git remote remove origin", cwd=target_dir, hide_output=True) # Disconnect from old
         run_cmd(["git", "remote", "add", "origin", repo_url], cwd=target_dir) # Connect to new
-        run_cmd("git add .", cwd=target_dir)
+        safe_git_add(target_dir)
         run_cmd(["git", "commit", "-m", "Copied to a new project"], cwd=target_dir)
         run_cmd("git branch -M main", cwd=target_dir)
 
@@ -325,6 +421,7 @@ def configure_gitignore(target_dir):
     """
     Scans the project for potentially sensitive or unwanted files, shows the
     user what was found, and updates (or creates) .gitignore accordingly.
+    Also offers to ignore common large media/binary file types.
     """
     print_header("🔒 .GITIGNORE SETUP — PROTECT SENSITIVE FILES")
     print(
@@ -381,6 +478,53 @@ def configure_gitignore(target_dir):
          "Same as dist/ — auto-generated, not needed in source control."),
     ]
 
+    # Large media / binary file types that can bloat a repository
+    LARGE_FILE_CHECKS = [
+        # Audio
+        ("*.mp3",  "MP3 audio files (*.mp3)",
+         "Audio files can be large and bloat repository history. Use Git LFS or an asset host instead."),
+        ("*.wav",  "WAV audio files (*.wav)",
+         "Uncompressed audio — often very large. Not suitable for git."),
+        ("*.ogg",  "OGG audio files (*.ogg)",
+         "Compressed audio that still adds to repository size over time."),
+        ("*.flac", "FLAC lossless audio (*.flac)",
+         "Lossless audio files are very large — not suited for git."),
+        ("*.aac",  "AAC audio files (*.aac)",
+         "Audio files that can bloat your repository."),
+        ("*.m4a",  "M4A audio files (*.m4a)",
+         "Apple audio format — same size concerns as MP3."),
+        # Video
+        ("*.mp4",  "MP4 video files (*.mp4)",
+         "Video files are very large and will severely bloat your repository history."),
+        ("*.mkv",  "MKV video files (*.mkv)",
+         "Matroska video container — very large, not suited for git."),
+        ("*.avi",  "AVI video files (*.avi)",
+         "Older video format — often very large."),
+        ("*.mov",  "MOV video files (*.mov)",
+         "QuickTime video — can be extremely large."),
+        ("*.wmv",  "WMV video files (*.wmv)",
+         "Windows Media Video — large binary files."),
+        ("*.webm", "WebM video files (*.webm)",
+         "Web video format — still large for git storage."),
+        # Large image / design files
+        ("*.psd",  "Photoshop files (*.psd)",
+         "Large design files that can bloat repository size significantly."),
+        ("*.raw",  "Camera RAW image files (*.raw)",
+         "Unprocessed camera images — very large, unsuitable for git."),
+        # Archives
+        ("*.rar",  "RAR archives (*.rar)",
+         "Large binary archives — bloat repository history."),
+        ("*.7z",   "7-Zip archives (*.7z)",
+         "Compressed archives — same concerns as ZIP."),
+        # Disk / executable images
+        ("*.iso",  "Disk image files (*.iso)",
+         "Disk images are extremely large (often gigabytes)."),
+        ("*.exe",  "Windows executables (*.exe)",
+         "Binary executables — rarely belong in source control and can be large."),
+        ("*.dmg",  "macOS disk images (*.dmg)",
+         "macOS installer images — very large binary files."),
+    ]
+
     # Read existing .gitignore to avoid duplicating entries
     gitignore_path = os.path.join(target_dir, ".gitignore")
     existing_lines = set()
@@ -391,12 +535,14 @@ def configure_gitignore(target_dir):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------ #
+    #  SECTION 1 — Sensitive / unnecessary files                          #
+    # ------------------------------------------------------------------ #
+
     # Scan which patterns actually exist in this project
     found_patterns = []
     for pattern, label, reason in SENSITIVE_CHECKS:
         search = pattern.rstrip("/")
-        check_path = os.path.join(target_dir, search.replace("*", ""))
-        # Simple presence check (exact filename or directory)
         exact_match = os.path.exists(os.path.join(target_dir, search))
         wildcard_match = False
         if "*" in pattern:
@@ -413,35 +559,89 @@ def configure_gitignore(target_dir):
             if not any(p == pattern for p, _, _ in found_patterns):
                 found_patterns.append((pattern, label, reason))
 
+    to_add = []
+
     if not found_patterns:
         print(f"{Colors.GREEN}✔ Your .gitignore looks good — no obvious sensitive files detected.{Colors.ENDC}")
-        return
+    else:
+        print(f"{Colors.WARNING}The following file types were found or are commonly present in projects like yours.{Colors.ENDC}")
+        print(f"You will be asked about each one. It is strongly recommended to ignore most of them.\n")
 
-    print(f"{Colors.WARNING}The following file types were found or are commonly present in projects like yours.{Colors.ENDC}")
-    print(f"You will be asked about each one. It is strongly recommended to ignore most of them.\n")
+        for i, (pattern, label, reason) in enumerate(found_patterns, 1):
+            print(f"\n  {Colors.BOLD}[{i}/{len(found_patterns)}] {label}{Colors.ENDC}")
+            print(f"      {Colors.CYAN}Why ignore it?{Colors.ENDC} {reason}")
+            answer = input(f"      Add '{pattern}' to .gitignore? (Y/n): ").strip().lower()
+            if answer != "n":
+                to_add.append(pattern)
+                print(f"      {Colors.GREEN}✔ Will be ignored.{Colors.ENDC}")
+            else:
+                print(f"      {Colors.WARNING}Skipped — this file type WILL be uploaded to GitHub.{Colors.ENDC}")
 
-    to_add = []
-    for i, (pattern, label, reason) in enumerate(found_patterns, 1):
-        print(f"\n  {Colors.BOLD}[{i}/{len(found_patterns)}] {label}{Colors.ENDC}")
-        print(f"      {Colors.CYAN}Why ignore it?{Colors.ENDC} {reason}")
-        answer = input(f"      Add '{pattern}' to .gitignore? (Y/n): ").strip().lower()
-        if answer != "n":
-            to_add.append(pattern)
-            print(f"      {Colors.GREEN}✔ Will be ignored.{Colors.ENDC}")
+    # ------------------------------------------------------------------ #
+    #  SECTION 2 — Large media / binary files (optional)                  #
+    # ------------------------------------------------------------------ #
+
+    print(f"\n{Colors.HEADER}--- Large Media & Binary Files ---{Colors.ENDC}")
+    print(
+        "Large files (audio, video, disk images) can severely bloat your repository.\n"
+        f"GitHub has a {Colors.WARNING}100 MB file-size limit{Colors.ENDC} and repositories should stay well under 1 GB.\n"
+    )
+    show_large = input("Would you like to check for common large file types to ignore? (y/N): ").strip().lower()
+
+    to_add_large = []
+    if show_large == 'y':
+        # Detect which large-file patterns are present in the project
+        found_large = []
+        for pattern, label, reason in LARGE_FILE_CHECKS:
+            search = pattern.rstrip("/")
+            wildcard_match = bool(glob.glob(os.path.join(target_dir, "**", search), recursive=True))
+            exact_match = os.path.exists(os.path.join(target_dir, search))
+            if (wildcard_match or exact_match) and pattern not in existing_lines:
+                found_large.append((pattern, label, reason))
+
+        # Always suggest the most common media types
+        always_suggest_large = {"*.mp3", "*.mp4", "*.wav"}
+        for pattern, label, reason in LARGE_FILE_CHECKS:
+            if pattern in always_suggest_large and pattern not in existing_lines:
+                if not any(p == pattern for p, _, _ in found_large):
+                    found_large.append((pattern, label, reason))
+
+        if not found_large:
+            print(f"{Colors.GREEN}✔ No large media files detected in your project.{Colors.ENDC}")
         else:
-            print(f"      {Colors.WARNING}Skipped — this file type WILL be uploaded to GitHub.{Colors.ENDC}")
+            print(
+                f"{Colors.WARNING}The following large file types were found or are commonly committed by mistake.{Colors.ENDC}\n"
+            )
+            for i, (pattern, label, reason) in enumerate(found_large, 1):
+                print(f"\n  {Colors.BOLD}[{i}/{len(found_large)}] {label}{Colors.ENDC}")
+                print(f"      {Colors.CYAN}Why ignore it?{Colors.ENDC} {reason}")
+                answer = input(f"      Add '{pattern}' to .gitignore? (Y/n): ").strip().lower()
+                if answer != "n":
+                    to_add_large.append(pattern)
+                    print(f"      {Colors.GREEN}✔ Will be ignored.{Colors.ENDC}")
+                else:
+                    print(f"      {Colors.WARNING}Skipped.{Colors.ENDC}")
 
-    if not to_add:
+    # ------------------------------------------------------------------ #
+    #  Write all new entries to .gitignore                                #
+    # ------------------------------------------------------------------ #
+
+    if not to_add and not to_add_large:
         print(f"\n{Colors.CYAN}No changes made to .gitignore.{Colors.ENDC}")
         return
 
-    # Write the new entries to .gitignore
     try:
         with open(gitignore_path, "a", encoding="utf-8") as f:
-            f.write("\n# --- Added by GitHub Auto-Pilot ---\n")
-            for p in to_add:
-                f.write(p + "\n")
-        print(f"\n{Colors.GREEN}✔ .gitignore updated successfully with {len(to_add)} new rule(s).{Colors.ENDC}")
+            if to_add:
+                f.write("\n# --- Added by GitHub Auto-Pilot ---\n")
+                for p in to_add:
+                    f.write(p + "\n")
+            if to_add_large:
+                f.write("\n# --- Large Media & Binary Files (GitHub Auto-Pilot) ---\n")
+                for p in to_add_large:
+                    f.write(p + "\n")
+        total = len(to_add) + len(to_add_large)
+        print(f"\n{Colors.GREEN}✔ .gitignore updated successfully with {total} new rule(s).{Colors.ENDC}")
         print(f"   File saved at: {gitignore_path}")
     except Exception as e:
         print(f"{Colors.FAIL}Could not write .gitignore: {e}{Colors.ENDC}")
@@ -641,7 +841,7 @@ def create_pull_request(token, target_dir):
     _, status_out = run_cmd("git status --porcelain", cwd=target_dir, hide_output=True)
     if status_out.strip():
         print(f"\n{Colors.CYAN}You have uncommitted changes. Committing them to '{new_branch}'...{Colors.ENDC}")
-        run_cmd("git add .", cwd=target_dir)
+        safe_git_add(target_dir)
         commit_msg = input(
             f"Commit message for this branch (e.g. 'Add contact page'): {Colors.GREEN}"
         ) or f"Changes for PR: {new_branch}"
