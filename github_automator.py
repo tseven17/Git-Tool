@@ -86,7 +86,6 @@ def load_config():
                 "default": {"token": old_token, "login": "default", "name": "", "email": ""}
             }
         }
-        save_config(migrated)
         return migrated
 
     return data
@@ -103,6 +102,10 @@ def save_config(config):
             TOKEN_FILE.chmod(stat.S_IWRITE | stat.S_IREAD)
         except Exception:
             pass
+    if os.name != 'nt' and not TOKEN_FILE.exists():
+        # Pre-create with restricted permissions to avoid world-readable window
+        fd = os.open(str(TOKEN_FILE), os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(fd)
     with open(TOKEN_FILE, 'w') as f:
         json.dump(config, f, indent=2)
     try:
