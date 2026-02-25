@@ -273,10 +273,11 @@ def _parse_github_owner_repo(remote_url):
     try:
         if remote_url.startswith("http"):
             without_scheme = remote_url[remote_url.index("github.com"):]
-            parts = without_scheme.rstrip("/").rstrip(".git").split("/")
+            without_scheme = without_scheme.removesuffix(".git").rstrip("/")
+            parts = without_scheme.split("/")
             return parts[1], parts[2]
         elif remote_url.startswith("git@"):
-            path_part = remote_url.split(":")[-1].rstrip(".git")
+            path_part = remote_url.split(":")[-1].removesuffix(".git")
             parts = path_part.split("/")
             return parts[0], parts[1]
     except (IndexError, ValueError):
@@ -316,7 +317,12 @@ def display_repo_info(target_dir, token, login, name, email):
     if email:
         run_cmd(["git", "config", "--local", "user.email", email], cwd=target_dir, hide_output=True)
     if name or email:
-        print(f"{Colors.GREEN}✔ Git identity set to: {name} <{email}>{Colors.ENDC}")
+        identity_parts = []
+        if name:
+            identity_parts.append(name)
+        if email:
+            identity_parts.append(f"<{email}>")
+        print(f"{Colors.GREEN}✔ Git identity set to: {' '.join(identity_parts)}{Colors.ENDC}")
 
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {text} ==={Colors.ENDC}")
@@ -1085,10 +1091,11 @@ def create_pull_request(token, target_dir):
     owner, repo = None, None
     if "github.com" in remote_url:
         if remote_url.startswith("http"):
-            parts = remote_url.rstrip("/").rstrip(".git").split("/")
+            remote_url_stripped = remote_url.removesuffix(".git").rstrip("/")
+            parts = remote_url_stripped.split("/")
             owner, repo = parts[-2], parts[-1]
         elif remote_url.startswith("git@"):
-            path_part = remote_url.split(":")[-1].rstrip(".git")
+            path_part = remote_url.split(":")[-1].removesuffix(".git")
             parts = path_part.split("/")
             owner, repo = parts[0], parts[1]
 
